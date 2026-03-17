@@ -55,6 +55,18 @@ function assertChannelPayload(channel) {
   if (channel.pluginId === "webhook" && !channel.url) {
     throw new Error("Webhook 渠道需要 url。");
   }
+
+  if (channel.pluginId === "wecom-bot" && !channel.webhookKey && !channel.webhookUrl && !channel.url) {
+    throw new Error("企业微信机器人渠道需要 webhookKey 或 webhookUrl。");
+  }
+
+  if (
+    channel.pluginId === "wecom-bot" &&
+    channel.messageType &&
+    !["markdown", "text"].includes(String(channel.messageType).trim().toLowerCase())
+  ) {
+    throw new Error("企业微信机器人消息类型只支持 markdown 或 text。");
+  }
 }
 
 function createRegistry(logger) {

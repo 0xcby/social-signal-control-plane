@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildSettingsSnapshot, mergeConfigWithState } from "../src/core/config-service.js";
+import { wecomBotChannel } from "../src/channels/wecom-bot.js";
 import { AuthManager } from "../src/core/auth-manager.js";
 import { createLogger } from "../src/core/logger.js";
 import { resolvePlatformStorageStatePath } from "../src/core/platform-auth.js";
@@ -513,6 +514,56 @@ test("settings snapshot keeps custom targets and dynamic channels", () => {
   assert.equal(douyin.targets[1].id, "custom-sec-user");
   assert.ok(snapshot.channels.some((channel) => channel.id === "console" && channel.builtin));
   assert.ok(snapshot.channels.some((channel) => channel.id === "custom-webhook" && !channel.builtin));
+});
+
+test("wecom bot channel builds markdown payload from webhook key", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          errcode: 0,
+          errmsg: "ok"
+        };
+      }
+    };
+  };
+
+  try {
+    const sender = await wecomBotChannel.createSender({
+      channelConfig: {
+        webhookKey: "abc123xyz789",
+        messageType: "markdown"
+      },
+      logger: createSilentLogger()
+    });
+
+    await sender.send({
+      platformName: "微博",
+      target: { label: "人民日报" },
+      author: { name: "人民日报" },
+      message: {
+        title: "最新消息标题",
+        content: "这里是最新消息内容",
+        url: "https://example.com/post/1",
+        publishedAt: "2026-03-17T12:00:00.000Z"
+      }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=abc123xyz789/);
+  const payload = JSON.parse(calls[0].options.body);
+  assert.equal(payload.msgtype, "markdown");
+  assert.match(payload.markdown.content, /微博 \/ 人民日报/);
+  assert.match(payload.markdown.content, /打开原文/);
 });
 
 test("realtime hub dashboard exposes management sections and dashboard script", () => {

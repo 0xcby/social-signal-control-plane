@@ -70,6 +70,15 @@ export default {
       chatId: process.env.TELEGRAM_CHAT_ID,
       parseMode: "HTML"
     },
+    "wecom-bot": {
+      enabled: false,
+      label: "企业微信机器人",
+      webhookKey: process.env.NEWS_WECOM_BOT_WEBHOOK_KEY,
+      webhookUrl: process.env.NEWS_WECOM_BOT_WEBHOOK_URL,
+      messageType: process.env.NEWS_WECOM_BOT_MESSAGE_TYPE ?? "markdown",
+      mentionedList: process.env.NEWS_WECOM_BOT_MENTIONED_LIST,
+      mentionedMobileList: process.env.NEWS_WECOM_BOT_MENTIONED_MOBILE_LIST
+    },
     webhook: {
       enabled: false,
       url: process.env.NEWS_WEBHOOK_URL

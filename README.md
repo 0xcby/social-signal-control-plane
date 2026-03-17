@@ -1,6 +1,6 @@
 # Social Signal Control Plane
 
-面向中文内容平台的插件化监控与推送中枢。项目聚焦于“监控最新发布内容 -> 统一聚合 -> 多渠道实时分发”，当前默认覆盖抖音、微博、微信公众号、小红书，并提供浏览器端 Dashboard、SSE 实时流、Telegram、Webhook 等推送能力。
+面向中文内容平台的插件化监控与推送中枢。项目聚焦于“监控最新发布内容 -> 统一聚合 -> 多渠道实时分发”，当前默认覆盖抖音、微博、微信公众号、小红书，并提供浏览器端 Dashboard、SSE 实时流、Telegram、企业微信机器人、Webhook 等推送能力。
 
 ![Dashboard Preview](docs/assets/dashboard-feed.png)
 
@@ -19,7 +19,7 @@
 - 平台插件：抖音、微博、微信公众号、小红书
 - 实时消息流：按发布时间倒序展示，支持平台分页、用户筛选
 - 登录管理：需要登录的平台会在页面中展示状态，并支持点击发起登录
-- 通知能力：浏览器通知、SSE、Telegram、Webhook、Console
+- 通知能力：浏览器通知、SSE、Telegram、企业微信机器人、Webhook、Console
 - 热更新配置：支持在页面中动态添加、编辑、删除监控目标
 - 去重与新消息基线：默认不回灌旧内容，只保留监控启动后新发现的内容
 
@@ -38,7 +38,7 @@ flowchart LR
     B --> C["运行时中枢<br/>Watcher Scheduler / Dedupe / State Store"]
     C --> D["消息事件模型<br/>PublishedAt / Media / Source URL"]
     C --> E["Dashboard + Feed<br/>HTTP / SSE / Browser Notification"]
-    C --> F["渠道插件<br/>Telegram / Webhook / Console / Custom"]
+    C --> F["渠道插件<br/>Telegram / WeCom Bot / Webhook / Console / Custom"]
 ```
 
 ## 默认平台支持
@@ -57,6 +57,7 @@ flowchart LR
 | Browser SSE | 本地页面实时消息流 |
 | Browser Notification | 浏览器原生通知弹窗 |
 | Telegram | 通过 Bot 推送到指定会话 |
+| WeCom Bot | 通过企业微信群机器人 Webhook 推送到群聊 |
 | Webhook | 推送到任意 HTTP 接收端 |
 | Console | 本地终端日志输出 |
 
@@ -112,10 +113,21 @@ npm run auth:xiaohongshu
   - 平台采集驱动类型
 - `channels`
   - 推送渠道开关与参数
+- `channels.wecom-bot`
+  - 企业微信机器人配置，支持 `webhookKey` 或 `webhookUrl`
 - `runtime.externalPlugins`
   - 外部插件加载入口
 - `runtime.browser`
   - 浏览器采集参数
+
+企业微信机器人环境变量示例：
+
+```bash
+NEWS_WECOM_BOT_WEBHOOK_KEY=your-wecom-bot-key
+NEWS_WECOM_BOT_MESSAGE_TYPE=markdown
+NEWS_WECOM_BOT_MENTIONED_MOBILE_LIST=
+NEWS_WECOM_BOT_MENTIONED_LIST=
+```
 
 ## 真实时效说明
 

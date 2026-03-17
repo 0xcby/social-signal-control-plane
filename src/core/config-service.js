@@ -125,6 +125,40 @@ function mergeChannelDefinitions(baseChannels, stateChannels = []) {
   return [...merged.values()];
 }
 
+function maskSecret(value) {
+  const text = String(value ?? "").trim();
+
+  if (!text) {
+    return "";
+  }
+
+  if (text.length <= 8) {
+    return `${text.slice(0, 2)}***${text.slice(-2)}`;
+  }
+
+  return `${text.slice(0, 4)}***${text.slice(-4)}`;
+}
+
+function extractWecomWebhookKey(channel) {
+  const directKey = String(channel.webhookKey ?? "").trim();
+
+  if (directKey) {
+    return directKey;
+  }
+
+  const webhookUrl = String(channel.webhookUrl ?? channel.url ?? "").trim();
+
+  if (!webhookUrl) {
+    return "";
+  }
+
+  try {
+    return new URL(webhookUrl).searchParams.get("key") ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export function mergeConfigWithState(baseConfig, state) {
   const mergedConfig = clone(baseConfig);
 
@@ -151,6 +185,11 @@ export function mergeConfigWithState(baseConfig, state) {
 function summarizeChannel(channel) {
   if (channel.pluginId === "telegram") {
     return channel.chatId ? `Chat ID：${channel.chatId}` : "待填写 Bot Token / Chat ID";
+  }
+
+  if (channel.pluginId === "wecom-bot") {
+    const webhookKey = extractWecomWebhookKey(channel);
+    return webhookKey ? `企业微信机器人：Key ${maskSecret(webhookKey)}` : "待填写机器人 Key / Webhook URL";
   }
 
   if (channel.pluginId === "webhook") {

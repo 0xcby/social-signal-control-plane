@@ -3,7 +3,7 @@ const PAGE_DEFINITIONS = [
   { id: "feed", path: "/feed", icon: "流", label: "实时消息", note: "分页与消息流" },
   { id: "targets", path: "/targets", icon: "监", label: "监控用户", note: "新增编辑删除" },
   { id: "auth", path: "/auth", icon: "登", label: "平台登录", note: "状态与登录" },
-  { id: "channels", path: "/channels", icon: "渠", label: "通知渠道", note: "Webhook 与 Telegram" },
+  { id: "channels", path: "/channels", icon: "渠", label: "通知渠道", note: "Webhook / Telegram / 企业微信" },
   { id: "notifications", path: "/notifications", icon: "铃", label: "浏览器通知", note: "系统通知" }
 ];
 
@@ -12,7 +12,7 @@ const PAGE_META = {
   feed: { title: "实时消息", description: "按平台分页、监控用户筛选和分页查看实时消息流。" },
   targets: { title: "监控用户", description: "维护每个平台的监控目标，支持新增、编辑和删除。" },
   auth: { title: "平台登录", description: "查看平台登录状态，必要时直接发起登录流程。" },
-  channels: { title: "通知渠道", description: "管理 Webhook、Telegram 等通知渠道。" },
+  channels: { title: "通知渠道", description: "管理 Webhook、Telegram、企业微信机器人等通知渠道。" },
   notifications: { title: "浏览器通知", description: "控制浏览器端系统通知，发现消息后直接弹出提醒。" }
 };
 
@@ -278,8 +278,35 @@ function channelTypes() {
         { key: "chatId", label: "Chat ID", placeholder: "例如：-1001234567890" },
         { key: "parseMode", label: "Parse Mode", placeholder: "HTML" }
       ]
+    },
+    {
+      pluginId: "wecom-bot",
+      fields: [
+        { key: "label", label: "渠道名称", placeholder: "例如：企业微信机器人" },
+        { key: "webhookKey", label: "机器人 Key", placeholder: "与 Webhook URL 二选一" },
+        { key: "webhookUrl", label: "Webhook URL", placeholder: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." },
+        { key: "messageType", label: "消息类型", placeholder: "markdown 或 text，默认 markdown" },
+        { key: "mentionedMobileList", label: "提醒手机号", placeholder: "可选，逗号分隔，text 模式支持 @all" },
+        { key: "mentionedList", label: "提醒成员 UserId", placeholder: "可选，逗号分隔，仅 text 模式生效" }
+      ]
     }
   ];
+}
+
+function renderChannelTypeOptions() {
+  const previousValue = elements.channelType.value;
+  const options = channelTypes();
+
+  elements.channelType.innerHTML = options
+    .map((channel) => `<option value="${escapeHtml(channel.pluginId)}">${escapeHtml(channel.pluginId === "wecom-bot" ? "企业微信机器人" : channel.pluginId === "webhook" ? "Webhook" : "Telegram")}</option>`)
+    .join("");
+
+  if (options.some((channel) => channel.pluginId === previousValue)) {
+    elements.channelType.value = previousValue;
+    return;
+  }
+
+  elements.channelType.value = options[0]?.pluginId || "webhook";
 }
 
 function getTargetFormValues() {
@@ -559,6 +586,7 @@ function renderAuthStatuses() {
 }
 
 function renderChannelFormFields() {
+  renderChannelTypeOptions();
   const type = channelTypes().find((entry) => entry.pluginId === elements.channelType.value);
   const existing = state.editingChannelId ? getChannelDefinition(state.editingChannelId) : undefined;
   const config = existing?.config || {};
@@ -569,7 +597,7 @@ function renderChannelFormFields() {
 }
 
 function renderManagedChannels() {
-  elements.managedChannels.innerHTML = state.settings.channels.map((channel) => `<article class="mini"><div class="mini-head"><strong>${escapeHtml(channel.label || channel.id)}</strong><span class="status">${channel.enabled ? "已启用" : "已停用"}</span></div><p class="muted">${escapeHtml(channel.pluginId)} / ${escapeHtml(channel.summary || "")}</p><div class="mini-actions">${channel.pluginId === "webhook" || channel.pluginId === "telegram" ? `<button type="button" class="btn edit-channel" data-channel-id="${escapeHtml(channel.id)}">编辑</button>` : ""}${!channel.builtin ? `<button type="button" class="btn remove-channel" data-channel-id="${escapeHtml(channel.id)}">删除</button>` : '<span class="muted">内置渠道</span>'}</div></article>`).join("") || '<div class="empty">暂无通知渠道。</div>';
+  elements.managedChannels.innerHTML = state.settings.channels.map((channel) => `<article class="mini"><div class="mini-head"><strong>${escapeHtml(channel.label || channel.id)}</strong><span class="status">${channel.enabled ? "已启用" : "已停用"}</span></div><p class="muted">${escapeHtml(channel.pluginId)} / ${escapeHtml(channel.summary || "")}</p><div class="mini-actions">${channel.pluginId === "webhook" || channel.pluginId === "telegram" || channel.pluginId === "wecom-bot" ? `<button type="button" class="btn edit-channel" data-channel-id="${escapeHtml(channel.id)}">编辑</button>` : ""}${!channel.builtin ? `<button type="button" class="btn remove-channel" data-channel-id="${escapeHtml(channel.id)}">删除</button>` : '<span class="muted">内置渠道</span>'}</div></article>`).join("") || '<div class="empty">暂无通知渠道。</div>';
   for (const button of elements.managedChannels.querySelectorAll(".edit-channel")) {
     button.addEventListener("click", () => {
       state.editingChannelId = button.getAttribute("data-channel-id");
@@ -665,6 +693,7 @@ async function refreshSettings() {
   const previousChannelType = elements.channelType.value;
   state.settings = { platforms: payload.platforms || [], channels: payload.channels || [] };
   state.authStatuses = payload.authStatuses || [];
+  renderChannelTypeOptions();
   elements.monitorPlatform.innerHTML = state.settings.platforms.map((platform) => `<option value="${escapeHtml(platform.id)}">${escapeHtml(platform.name)}</option>`).join("");
   if (state.editingTarget && !getPlatformTarget(state.editingTarget.platformId, state.editingTarget.targetId)) {
     state.editingTarget = undefined;
