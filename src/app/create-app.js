@@ -245,6 +245,9 @@ export async function createApp(baseConfig, { cwd = process.cwd() } = {}) {
     async getAuthStatuses() {
       return authManager.getStatuses(activeConfig);
     },
+    getLocalAuthAgentStatus() {
+      return authManager.getLocalAgentStatus();
+    },
     async getDiscoveredSessions() {
       return stateStore.listDiscoveredSessions("wecom-smart-bot");
     },
@@ -280,17 +283,17 @@ export async function createApp(baseConfig, { cwd = process.cwd() } = {}) {
     async startPlatformLogin(platformId) {
       return authManager.startLogin(platformId, activeConfig);
     },
-    getRemoteLoginSessionStatus(sessionId) {
-      return authManager.getRemoteSessionStatus(sessionId);
+    async heartbeatLocalAuthAgent(token, payload) {
+      return authManager.heartbeatLocalAgent(token, payload);
     },
-    renderRemoteLoginSession(sessionId) {
-      return authManager.renderRemoteSessionView(sessionId);
+    async claimLocalAuthAgentTask(token, payload) {
+      return authManager.claimLocalAgentTask(token, payload);
     },
-    async getRemoteLoginSessionSnapshot(sessionId) {
-      return authManager.getRemoteSessionSnapshot(sessionId);
+    async completeLocalAuthAgentTask(token, taskId, storageStatePayload) {
+      return authManager.completeLocalAgentTask(token, taskId, storageStatePayload);
     },
-    async dispatchRemoteLoginSessionAction(sessionId, action, payload) {
-      return authManager.dispatchRemoteSessionAction(sessionId, action, payload);
+    async failLocalAuthAgentTask(token, taskId, error) {
+      return authManager.failLocalAgentTask(token, taskId, error);
     }
   };
 

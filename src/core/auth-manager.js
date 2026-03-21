@@ -14,9 +14,11 @@ import {
 } from "./platform-auth.js";
 
 const LOGIN_VALIDATION_TTL_MS = 2 * 60 * 1000;
-const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const VALIDATION_TIMEOUT_MS = 60 * 1000;
-const REMOTE_LOGIN_VIEWPORT = { width: 1440, height: 1024 };
+const VALIDATION_VIEWPORT = { width: 1440, height: 1024 };
+const LOCAL_AGENT_HEARTBEAT_TTL_MS = 30 * 1000;
+const LOCAL_AGENT_CLAIM_TIMEOUT_MS = 20 * 1000;
+const LOCAL_AGENT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
 
 function defaultBrowserArgs() {
   const args = ["--disable-blink-features=AutomationControlled"];
@@ -28,39 +30,32 @@ function defaultBrowserArgs() {
   return args;
 }
 
-function escapeHtml(text) {
-  return String(text ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+function safeJsonParse(input, fallback) {
+  try {
+    return JSON.parse(input);
+  } catch {
+    return fallback;
+  }
 }
 
-function createPlatformStatus(platform, descriptor, storageStatePath, sessionState, validation) {
-  const session = sessionState.get(platform.id);
-
-  if (session?.status === "running") {
-    return {
-      platformId: platform.id,
-      requiresLogin: true,
-      status: "登录中",
-      loginUrl: descriptor.loginUrl,
-      viewerPath: session.viewerPath,
-      detail: "服务器远程登录工作台已创建，请打开工作台完成登录。"
-    };
+function normalizeStorageStatePayload(payload) {
+  if (typeof payload === "string") {
+    return safeJsonParse(payload, undefined);
   }
 
-  if (session?.status === "failed") {
-    return {
-      platformId: platform.id,
-      requiresLogin: true,
-      status: "登录失败",
-      loginUrl: descriptor.loginUrl,
-      viewerPath: session.viewerPath,
-      detail: session.message
-    };
+  if (payload && typeof payload === "object") {
+    return payload;
   }
+
+  return undefined;
+}
+
+function createPlatformStatus(platform, descriptor, storageStatePath, validation, localAgentStatus) {
+  const baseDetail = localAgentStatus.enabled
+    ? localAgentStatus.online
+      ? "本地登录代理在线，点击“开始登录”后会在本机自动打开浏览器。"
+      : "本地登录代理未在线，登录任务暂时不会被执行。"
+    : "服务器远程登录工作台已移除，请改用本地登录代理或手动同步登录态。";
 
   if (validation?.status === "invalid") {
     return {
@@ -68,7 +63,7 @@ function createPlatformStatus(platform, descriptor, storageStatePath, sessionSta
       requiresLogin: true,
       status: "登录态已失效",
       loginUrl: descriptor.loginUrl,
-      detail: validation.detail
+      detail: `${validation.detail} ${baseDetail}`.trim()
     };
   }
 
@@ -82,13 +77,13 @@ function createPlatformStatus(platform, descriptor, storageStatePath, sessionSta
     };
   }
 
-  if (session?.status === "success" || validation?.status === "valid") {
+  if (validation?.status === "valid") {
     return {
       platformId: platform.id,
       requiresLogin: true,
       status: "已保存登录态",
       loginUrl: descriptor.loginUrl,
-      detail: validation?.detail ?? `登录态文件：${storageStatePath}`
+      detail: validation.detail ?? `登录态文件：${storageStatePath}`
     };
   }
 
@@ -97,7 +92,7 @@ function createPlatformStatus(platform, descriptor, storageStatePath, sessionSta
     requiresLogin: true,
     status: "未登录",
     loginUrl: descriptor.loginUrl,
-    detail: `${platform.name} 当前未保存登录态。点击“开始登录”后，会打开服务器远程登录工作台。`
+    detail: `${platform.name} 当前未保存登录态。${baseDetail}`.trim()
   };
 }
 
@@ -113,7 +108,7 @@ function describeInvalidStorageState(storageStatePath, inspection) {
   }
 
   if (inspection.expiredNames?.length) {
-    reasons.push(`已过期 Cookie：${inspection.expiredNames.join(", ")}`);
+    reasons.push(`Cookie 已过期：${inspection.expiredNames.join(", ")}`);
   }
 
   if (reasons.length === 0) {
@@ -123,208 +118,37 @@ function describeInvalidStorageState(storageStatePath, inspection) {
   return `登录态文件已失效：${storageStatePath}。${reasons.join("；")}。请重新登录。`;
 }
 
-function renderRemoteLoginPage({ sessionId, platformName }) {
-  const title = `${platformName} 远程登录`;
-
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>${escapeHtml(title)}</title>
-  <style>
-    :root{--bg:#07101b;--panel:#0f1724;--line:rgba(153,181,221,.14);--text:#edf4ff;--muted:#94a8c5;--accent:#69e7da;--danger:#ff7b7b}
-    *{box-sizing:border-box}body{margin:0;font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;background:linear-gradient(180deg,#07101b,#03070d);color:var(--text)}
-    .shell{min-height:100vh;display:grid;grid-template-rows:auto auto 1fr;gap:16px;padding:18px}
-    .panel{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#0e1726,#09111b);box-shadow:0 24px 70px rgba(2,6,12,.35)}
-    .head,.toolbar,.viewer-wrap{padding:16px 18px}.head h1{margin:0;font-size:24px}.muted{color:var(--muted);font-size:13px;line-height:1.7}
-    .toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}.field{display:grid;gap:8px;min-width:220px;flex:1 1 240px}.field span{color:var(--muted);font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
-    .field input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#07101b;color:var(--text)}
-    .actions{display:flex;flex-wrap:wrap;gap:10px}.btn{min-height:42px;padding:10px 14px;border-radius:14px;border:1px solid var(--line);background:#111b2b;color:var(--text);cursor:pointer}
-    .btn.primary{background:linear-gradient(135deg,var(--accent),#ff9968);color:#07101b;border-color:transparent;font-weight:800}
-    .viewer-wrap{display:grid;gap:12px}.status{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}.status strong{font-size:15px}
-    .badge{display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:rgba(105,231,218,.12);color:var(--accent);font-size:12px;font-weight:700}
-    .badge.danger{background:rgba(255,123,123,.12);color:#ffc1c1}
-    .screen-shell{display:grid;place-items:center;min-height:calc(100vh - 280px);padding:8px}
-    img{display:block;max-width:100%;height:auto;border-radius:18px;border:1px solid var(--line);background:#fff;cursor:crosshair}
-    .hint{font-size:12px;color:var(--muted)}
-  </style>
-</head>
-<body>
-  <main class="shell">
-    <section class="panel head">
-      <h1>${escapeHtml(title)}</h1>
-      <p class="muted">这是服务器上的远程登录工作台。你可以直接在截图上点击、输入文本，或使用手机扫描二维码完成登录。登录成功后，服务器会自动保存登录态。</p>
-    </section>
-    <section class="panel toolbar">
-      <label class="field">
-        <span>文本输入</span>
-        <input id="text-input" type="text" placeholder="输入账号、手机号、验证码后点发送文本"/>
-      </label>
-      <div class="actions">
-        <button id="send-text" class="btn primary" type="button">发送文本</button>
-        <button data-key="Enter" class="btn" type="button">Enter</button>
-        <button data-key="Tab" class="btn" type="button">Tab</button>
-        <button data-key="Backspace" class="btn" type="button">Backspace</button>
-        <button id="refresh-page" class="btn" type="button">刷新页面</button>
-        <button id="close-session" class="btn" type="button">关闭会话</button>
-      </div>
-    </section>
-    <section class="panel viewer-wrap">
-      <div class="status">
-        <div>
-          <strong id="status-text">正在连接远程登录会话...</strong>
-          <div id="status-detail" class="muted">请稍候，页面会自动刷新。</div>
-        </div>
-        <span id="status-badge" class="badge">连接中</span>
-      </div>
-      <div class="hint">点击截图可以操作页面。二维码登录时，直接用手机扫描当前画面里的二维码即可。</div>
-      <div class="screen-shell">
-        <img id="remote-screen" alt="远程登录画面" />
-      </div>
-    </section>
-  </main>
-  <script>
-    const sessionId = ${JSON.stringify(sessionId)};
-    const screen = document.getElementById("remote-screen");
-    const statusText = document.getElementById("status-text");
-    const statusDetail = document.getElementById("status-detail");
-    const statusBadge = document.getElementById("status-badge");
-    const textInput = document.getElementById("text-input");
-
-    async function requestJson(url, options = {}) {
-      const response = await fetch(url, {
-        cache: "no-store",
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        ...options
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "请求失败");
-      }
-      return payload;
-    }
-
-    function updateStatus(payload) {
-      statusText.textContent = payload.status || "未知状态";
-      statusDetail.textContent = payload.message || "";
-      statusBadge.textContent = payload.status || "状态";
-      statusBadge.classList.toggle("danger", /失败|失效|关闭/.test(payload.status || ""));
-    }
-
-    async function refreshStatus() {
-      try {
-        const payload = await requestJson("/auth/session/" + encodeURIComponent(sessionId) + "/status");
-        updateStatus(payload);
-        return !payload.completed;
-      } catch (error) {
-        updateStatus({ status: "会话异常", message: error.message });
-        statusBadge.classList.add("danger");
-        return false;
-      }
-    }
-
-    function refreshScreen() {
-      screen.src = "/auth/session/" + encodeURIComponent(sessionId) + "/snapshot?ts=" + Date.now();
-    }
-
-    async function sendAction(action, payload = {}) {
-      const result = await requestJson("/auth/session/" + encodeURIComponent(sessionId) + "/action", {
-        method: "POST",
-        body: JSON.stringify({ action, ...payload })
-      });
-      if (result.message) {
-        statusDetail.textContent = result.message;
-      }
-      refreshScreen();
-      return result;
-    }
-
-    screen.addEventListener("click", async (event) => {
-      if (!screen.naturalWidth || !screen.naturalHeight) {
-        return;
-      }
-      const rect = screen.getBoundingClientRect();
-      const x = ((event.clientX - rect.left) / rect.width) * screen.naturalWidth;
-      const y = ((event.clientY - rect.top) / rect.height) * screen.naturalHeight;
-      try {
-        await sendAction("click", { x, y });
-      } catch (error) {
-        statusDetail.textContent = error.message;
-      }
-    });
-
-    document.getElementById("send-text").addEventListener("click", async () => {
-      if (!textInput.value.trim()) {
-        return;
-      }
-      try {
-        await sendAction("type", { text: textInput.value });
-        textInput.value = "";
-      } catch (error) {
-        statusDetail.textContent = error.message;
-      }
-    });
-
-    for (const button of document.querySelectorAll("[data-key]")) {
-      button.addEventListener("click", async () => {
-        try {
-          await sendAction("key", { key: button.getAttribute("data-key") });
-        } catch (error) {
-          statusDetail.textContent = error.message;
-        }
-      });
-    }
-
-    document.getElementById("refresh-page").addEventListener("click", async () => {
-      try {
-        await sendAction("reload");
-      } catch (error) {
-        statusDetail.textContent = error.message;
-      }
-    });
-
-    document.getElementById("close-session").addEventListener("click", async () => {
-      try {
-        await sendAction("close");
-      } catch (error) {
-        statusDetail.textContent = error.message;
-      }
-    });
-
-    screen.addEventListener("error", () => {
-      window.setTimeout(refreshScreen, 1200);
-    });
-
-    refreshScreen();
-
-    async function loop() {
-      const keepPolling = await refreshStatus();
-      refreshScreen();
-      if (keepPolling) {
-        window.setTimeout(loop, 1800);
-      }
-    }
-
-    void loop();
-  </script>
-</body>
-</html>`;
+function isTaskTerminal(task) {
+  return task.status === "completed" || task.status === "failed";
 }
 
 export class AuthManager {
   constructor({
     cwd = process.cwd(),
     logger,
-    validationTtlMs = LOGIN_VALIDATION_TTL_MS
+    validationTtlMs = LOGIN_VALIDATION_TTL_MS,
+    localAgentToken = process.env.NEWS_LOCAL_AUTH_TOKEN ?? "",
+    localAgentHeartbeatTtlMs = LOCAL_AGENT_HEARTBEAT_TTL_MS,
+    localAgentClaimTimeoutMs = LOCAL_AGENT_CLAIM_TIMEOUT_MS,
+    localAgentTaskTimeoutMs = LOCAL_AGENT_TASK_TIMEOUT_MS
   }) {
     this.cwd = cwd;
     this.logger = logger;
-    this.sessions = new Map();
-    this.remoteSessions = new Map();
     this.validationTtlMs = validationTtlMs;
     this.validationCache = new Map();
     this.validationPromises = new Map();
+    this.localAgentToken = String(localAgentToken ?? "").trim();
+    this.localAgentHeartbeatTtlMs = localAgentHeartbeatTtlMs;
+    this.localAgentClaimTimeoutMs = localAgentClaimTimeoutMs;
+    this.localAgentTaskTimeoutMs = localAgentTaskTimeoutMs;
+    this.localAgentState = {
+      connectedAt: undefined,
+      lastSeenAt: undefined,
+      hostname: undefined,
+      version: undefined,
+      platform: undefined
+    };
+    this.localAgentTasks = new Map();
   }
 
   _getCacheKey(platformId, storageStatePath) {
@@ -342,6 +166,76 @@ export class AuthManager {
     this.validationPromises.delete(cacheKey);
   }
 
+  _assertAgentToken(token) {
+    if (!this.localAgentToken) {
+      throw new Error("本地登录代理未启用。请先在服务器环境变量中配置 NEWS_LOCAL_AUTH_TOKEN。");
+    }
+
+    if (String(token ?? "").trim() !== this.localAgentToken) {
+      throw new Error("本地登录代理鉴权失败。");
+    }
+  }
+
+  _isLocalAgentOnline() {
+    if (!this.localAgentToken) {
+      return false;
+    }
+
+    const lastSeenAt = this.localAgentState.lastSeenAt
+      ? Date.parse(this.localAgentState.lastSeenAt)
+      : Number.NaN;
+
+    return Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt <= this.localAgentHeartbeatTtlMs;
+  }
+
+  getLocalAgentStatus() {
+    return {
+      enabled: Boolean(this.localAgentToken),
+      online: this._isLocalAgentOnline(),
+      connectedAt: this.localAgentState.connectedAt,
+      lastSeenAt: this.localAgentState.lastSeenAt,
+      hostname: this.localAgentState.hostname,
+      version: this.localAgentState.version,
+      platform: this.localAgentState.platform,
+      pendingTasks: [...this.localAgentTasks.values()].filter((task) => !isTaskTerminal(task)).length
+    };
+  }
+
+  _expireStaleTasks() {
+    const now = Date.now();
+
+    for (const task of this.localAgentTasks.values()) {
+      if (isTaskTerminal(task)) {
+        continue;
+      }
+
+      const updatedAt = Date.parse(task.updatedAt ?? task.createdAt ?? "");
+
+      if (task.status === "pending" && Number.isFinite(updatedAt) && now - updatedAt > this.localAgentClaimTimeoutMs) {
+        task.status = "failed";
+        task.updatedAt = new Date().toISOString();
+        task.error = "本地登录代理未及时领取任务，任务已自动释放。";
+        continue;
+      }
+
+      if (Number.isFinite(updatedAt) && now - updatedAt > this.localAgentTaskTimeoutMs) {
+        task.status = "failed";
+        task.updatedAt = new Date().toISOString();
+        task.error = "本地登录代理任务超时。";
+      }
+    }
+  }
+
+  _findActiveTaskByPlatform(platformId) {
+    for (const task of this.localAgentTasks.values()) {
+      if (task.platformId === platformId && !isTaskTerminal(task)) {
+        return task;
+      }
+    }
+
+    return undefined;
+  }
+
   async _validateStoredLogin(platformId, descriptor, storageStatePath) {
     const executablePath = await resolveExecutablePath(process.env.NEWS_BROWSER_EXECUTABLE_PATH);
     const browser = await chromium.launch({
@@ -353,7 +247,7 @@ export class AuthManager {
       locale: "zh-CN",
       timezoneId: "Asia/Shanghai",
       userAgent: DEFAULT_USER_AGENT,
-      viewport: REMOTE_LOGIN_VIEWPORT,
+      viewport: VALIDATION_VIEWPORT,
       storageState: storageStatePath
     });
     const page = await context.newPage();
@@ -467,113 +361,9 @@ export class AuthManager {
     };
   }
 
-  async _closeRemoteSession(sessionId) {
-    const session = this.remoteSessions.get(sessionId);
-
-    if (!session) {
-      return;
-    }
-
-    session.closed = true;
-
-    try {
-      await session.context?.close();
-    } catch {}
-
-    try {
-      await session.browser?.close();
-    } catch {}
-  }
-
-  async _runRemoteLoginSession(platformId, descriptor, storageStatePath, session) {
-    const executablePath = await resolveExecutablePath(process.env.NEWS_BROWSER_EXECUTABLE_PATH);
-    const browser = await chromium.launch({
-      executablePath,
-      headless: true,
-      args: defaultBrowserArgs()
-    });
-    const context = await browser.newContext({
-      locale: "zh-CN",
-      timezoneId: "Asia/Shanghai",
-      userAgent: DEFAULT_USER_AGENT,
-      viewport: REMOTE_LOGIN_VIEWPORT
-    });
-    const page = await context.newPage();
-
-    session.browser = browser;
-    session.context = context;
-    session.page = page;
-
-    try {
-      session.message = "正在打开登录页面...";
-      await page.goto(descriptor.loginUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 120_000
-      });
-
-      if (descriptor.prepare) {
-        await descriptor.prepare({ page, context, timeoutMs: 120_000 });
-      }
-
-      session.message = "页面已打开。你可以点击、输入，或扫描二维码完成登录。";
-      const deadline = Date.now() + LOGIN_TIMEOUT_MS;
-
-      while (Date.now() < deadline && !session.closed) {
-        if (await descriptor.isLoggedIn({ page, context })) {
-          await fs.mkdir(path.dirname(storageStatePath), { recursive: true });
-          await context.storageState({ path: storageStatePath });
-          session.status = "success";
-          session.message = "登录态已保存，远程登录完成。";
-          this.sessions.set(platformId, {
-            status: "success",
-            startedAt: session.startedAt,
-            finishedAt: new Date().toISOString(),
-            viewerPath: session.viewerPath,
-            message: session.message
-          });
-          this._setValidation(platformId, storageStatePath, {
-            status: "valid",
-            checkedAt: Date.now(),
-            detail: `登录态文件：${storageStatePath}`
-          });
-          await this._closeRemoteSession(session.id);
-          return;
-        }
-
-        await page.waitForTimeout(1500);
-      }
-
-      if (!session.closed) {
-        session.status = "failed";
-        session.message = "登录等待超时，请重新开始登录并在 10 分钟内完成操作。";
-        this.sessions.set(platformId, {
-          status: "failed",
-          startedAt: session.startedAt,
-          finishedAt: new Date().toISOString(),
-          viewerPath: session.viewerPath,
-          message: session.message
-        });
-      }
-    } catch (error) {
-      session.status = "failed";
-      session.message = error?.message ?? String(error);
-      this.sessions.set(platformId, {
-        status: "failed",
-        startedAt: session.startedAt,
-        finishedAt: new Date().toISOString(),
-        viewerPath: session.viewerPath,
-        message: session.message
-      });
-      this.logger.error("平台远程登录失败", {
-        platformId,
-        error: session.message
-      });
-    } finally {
-      await this._closeRemoteSession(session.id);
-    }
-  }
-
   async getStatuses(config) {
+    this._expireStaleTasks();
+    const localAgentStatus = this.getLocalAgentStatus();
     const statuses = [];
 
     for (const platform of PLATFORM_DEFINITIONS) {
@@ -597,7 +387,13 @@ export class AuthManager {
         : undefined;
 
       statuses.push(
-        createPlatformStatus(platform, descriptor, storageStatePath, this.sessions, validation)
+        createPlatformStatus(
+          platform,
+          descriptor,
+          storageStatePath,
+          validation,
+          localAgentStatus
+        )
       );
     }
 
@@ -608,145 +404,157 @@ export class AuthManager {
     const descriptor = getPlatformAuthDescriptor(platformId);
 
     if (!descriptor) {
-      throw new Error(`暂不支持 ${platformId} 的页面登录。`);
+      throw new Error(`暂不支持 ${platformId} 的登录入口。`);
     }
 
-    const existingSession = this.sessions.get(platformId);
-
-    if (existingSession?.status === "running" && existingSession.viewerPath) {
+    if (!this.localAgentToken) {
       return {
         started: false,
-        message: "该平台已有远程登录工作台在运行，请直接打开它继续登录。",
-        viewerPath: existingSession.viewerPath
+        mode: "external",
+        loginUrl: descriptor.loginUrl,
+        message: "服务器远程登录工作台已移除。请在本地浏览器完成登录，再同步登录态到服务器。"
+      };
+    }
+
+    if (!this._isLocalAgentOnline()) {
+      return {
+        started: false,
+        mode: "local-agent",
+        loginUrl: descriptor.loginUrl,
+        message: "本地登录代理未在线。请先在本机启动 local auth agent，再重新发起登录。"
+      };
+    }
+
+    this._expireStaleTasks();
+    const existingTask = this._findActiveTaskByPlatform(platformId);
+
+    if (existingTask) {
+      return {
+        started: false,
+        mode: "local-agent",
+        taskId: existingTask.id,
+        message:
+          existingTask.status === "pending"
+            ? `${platformId} 已有待领取的本地登录任务。请确认本地登录代理正在运行；如果 20 秒内仍未弹出浏览器，可再次点击重新创建任务。`
+            : `${platformId} 已有进行中的本地登录任务，请先完成当前任务。`
       };
     }
 
     const storageStatePath = resolvePlatformStorageStatePath(platformId, config, this.cwd);
-    const sessionId = randomUUID();
-    const viewerPath = `/auth/session/${sessionId}`;
-    const session = {
-      id: sessionId,
+    const task = {
+      id: randomUUID(),
       platformId,
-      status: "running",
-      closed: false,
-      browser: undefined,
-      context: undefined,
-      page: undefined,
-      startedAt: new Date().toISOString(),
-      message: "服务器远程登录工作台已创建。",
-      viewerPath
+      loginUrl: descriptor.loginUrl,
+      storageStatePath,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
 
-    this.sessions.set(platformId, {
-      status: "running",
-      startedAt: session.startedAt,
-      viewerPath,
-      message: session.message
-    });
-    this.remoteSessions.set(sessionId, session);
+    this.localAgentTasks.set(task.id, task);
     this._clearValidation(platformId, storageStatePath);
-
-    void this._runRemoteLoginSession(platformId, descriptor, storageStatePath, session);
 
     return {
       started: true,
-      message: "远程登录工作台已创建，请在新页面中完成登录。",
-      viewerPath
+      mode: "local-agent",
+      taskId: task.id,
+      message: "已创建本地登录任务。本地登录代理会在你的电脑上自动打开浏览器。"
     };
   }
 
-  getRemoteSessionStatus(sessionId) {
-    const session = this.remoteSessions.get(sessionId);
+  async heartbeatLocalAgent(token, payload = {}) {
+    this._assertAgentToken(token);
+    const now = new Date().toISOString();
 
-    if (!session) {
-      return {
-        ok: false,
-        status: "会话不存在",
-        message: "远程登录会话不存在或已关闭。",
-        closed: true,
-        completed: true
-      };
+    if (!this.localAgentState.connectedAt) {
+      this.localAgentState.connectedAt = now;
     }
 
-    const statusText = {
-      running: "登录进行中",
-      success: "登录成功",
-      failed: "登录失败"
-    }[session.status] ?? session.status;
+    this.localAgentState.lastSeenAt = now;
+    this.localAgentState.hostname = String(payload.hostname ?? "").trim() || this.localAgentState.hostname;
+    this.localAgentState.version = String(payload.version ?? "").trim() || this.localAgentState.version;
+    this.localAgentState.platform = String(payload.platform ?? "").trim() || this.localAgentState.platform;
+
+    return this.getLocalAgentStatus();
+  }
+
+  async claimLocalAgentTask(token, payload = {}) {
+    this._assertAgentToken(token);
+    await this.heartbeatLocalAgent(token, payload);
+    this._expireStaleTasks();
+
+    const nextTask = [...this.localAgentTasks.values()]
+      .filter((task) => task.status === "pending")
+      .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))[0];
+
+    if (!nextTask) {
+      return { task: null };
+    }
+
+    nextTask.status = "running";
+    nextTask.updatedAt = new Date().toISOString();
+    nextTask.agent = {
+      hostname: this.localAgentState.hostname,
+      version: this.localAgentState.version,
+      platform: this.localAgentState.platform
+    };
+
+    return {
+      task: {
+        id: nextTask.id,
+        platformId: nextTask.platformId,
+        loginUrl: nextTask.loginUrl
+      }
+    };
+  }
+
+  async completeLocalAgentTask(token, taskId, storageStatePayload) {
+    this._assertAgentToken(token);
+    const task = this.localAgentTasks.get(taskId);
+
+    if (!task) {
+      throw new Error("本地登录任务不存在。");
+    }
+
+    const storageState = normalizeStorageStatePayload(storageStatePayload);
+
+    if (!storageState || !Array.isArray(storageState.cookies) || !Array.isArray(storageState.origins)) {
+      throw new Error("上传的登录态格式无效。");
+    }
+
+    await fs.mkdir(path.dirname(task.storageStatePath), { recursive: true });
+    await fs.writeFile(task.storageStatePath, JSON.stringify(storageState, null, 2), "utf8");
+
+    task.status = "completed";
+    task.updatedAt = new Date().toISOString();
+    delete task.error;
+
+    this._clearValidation(task.platformId, task.storageStatePath);
 
     return {
       ok: true,
-      sessionId,
-      platformId: session.platformId,
-      status: statusText,
-      message: session.message,
-      closed: session.closed,
-      completed: session.status !== "running"
+      taskId,
+      platformId: task.platformId,
+      storageStatePath: task.storageStatePath
     };
   }
 
-  renderRemoteSessionView(sessionId) {
-    const session = this.remoteSessions.get(sessionId);
+  async failLocalAgentTask(token, taskId, error) {
+    this._assertAgentToken(token);
+    const task = this.localAgentTasks.get(taskId);
 
-    if (!session) {
-      throw new Error("远程登录会话不存在或已关闭。");
+    if (!task) {
+      throw new Error("本地登录任务不存在。");
     }
 
-    const platformName =
-      PLATFORM_DEFINITIONS.find((item) => item.id === session.platformId)?.name ??
-      session.platformId;
+    task.status = "failed";
+    task.updatedAt = new Date().toISOString();
+    task.error = String(error ?? "").trim() || "本地登录代理执行失败。";
 
-    return renderRemoteLoginPage({
-      sessionId,
-      platformName
-    });
-  }
-
-  async getRemoteSessionSnapshot(sessionId) {
-    const session = this.remoteSessions.get(sessionId);
-
-    if (!session?.page || session.closed) {
-      throw new Error("远程登录会话不可用，无法获取当前画面。");
-    }
-
-    return session.page.screenshot({ type: "png" });
-  }
-
-  async dispatchRemoteSessionAction(sessionId, action, payload = {}) {
-    const session = this.remoteSessions.get(sessionId);
-
-    if (!session?.page || session.closed) {
-      throw new Error("远程登录会话已关闭。");
-    }
-
-    if (action === "click") {
-      await session.page.mouse.click(Number(payload.x) || 0, Number(payload.y) || 0);
-      return { ok: true, message: "已执行点击操作。" };
-    }
-
-    if (action === "type") {
-      await session.page.keyboard.type(String(payload.text ?? ""), { delay: 40 });
-      return { ok: true, message: "已发送文本输入。" };
-    }
-
-    if (action === "key") {
-      const key = String(payload.key ?? "Enter");
-      await session.page.keyboard.press(key);
-      return { ok: true, message: `已发送按键：${key}` };
-    }
-
-    if (action === "reload") {
-      await session.page.reload({ waitUntil: "domcontentloaded", timeout: 120_000 });
-      return { ok: true, message: "页面已刷新。" };
-    }
-
-    if (action === "close") {
-      session.status = "failed";
-      session.message = "远程登录会话已手动关闭。";
-      await this._closeRemoteSession(sessionId);
-      return { ok: true, message: session.message };
-    }
-
-    throw new Error(`不支持的远程操作：${action}`);
+    return {
+      ok: true,
+      taskId,
+      platformId: task.platformId
+    };
   }
 }

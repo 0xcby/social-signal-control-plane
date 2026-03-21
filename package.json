@@ -13,6 +13,7 @@
     "auth:wechat": "node scripts/platform-auth.js --platform wechat",
     "auth:weibo": "node scripts/platform-auth.js --platform weibo",
     "auth:xiaohongshu": "node scripts/xiaohongshu-auth.js",
+    "auth:agent": "node scripts/local-auth-agent.js",
     "test": "node --test --experimental-test-isolation=none"
   },
   "keywords": [

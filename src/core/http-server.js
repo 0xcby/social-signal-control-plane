@@ -55,15 +55,6 @@ function sendText(response, statusCode, payload, contentType, headers = {}) {
   response.end(payload);
 }
 
-function sendBinary(response, statusCode, payload, contentType, headers = {}) {
-  response.writeHead(statusCode, {
-    "Content-Type": contentType,
-    "Cache-Control": "no-store",
-    ...headers
-  });
-  response.end(payload);
-}
-
 export function createHttpServer({ config, shared, logger, appContext }) {
   const serverConfig = {
     enabled: true,
@@ -131,6 +122,7 @@ export function createHttpServer({ config, shared, logger, appContext }) {
         sendJson(response, 200, {
           ...appContext.getSettingsSnapshot(),
           authStatuses: await appContext.getAuthStatuses(),
+          localAuthAgent: appContext.getLocalAuthAgentStatus(),
           discoveredSessions: await appContext.getDiscoveredSessions()
         });
         return;
@@ -145,7 +137,8 @@ export function createHttpServer({ config, shared, logger, appContext }) {
 
       if (url.pathname === "/auth/status") {
         sendJson(response, 200, {
-          authStatuses: await appContext.getAuthStatuses()
+          authStatuses: await appContext.getAuthStatuses(),
+          localAuthAgent: appContext.getLocalAuthAgentStatus()
         });
         return;
       }
@@ -156,39 +149,51 @@ export function createHttpServer({ config, shared, logger, appContext }) {
         return;
       }
 
-      const remoteSessionMatch = url.pathname.match(/^\/auth\/session\/([^/]+)$/);
-      if (remoteSessionMatch && request.method === "GET") {
-        sendText(response, 200, appContext.renderRemoteLoginSession(remoteSessionMatch[1]), "text/html");
-        return;
-      }
-
-      const remoteSessionStatusMatch = url.pathname.match(/^\/auth\/session\/([^/]+)\/status$/);
-      if (remoteSessionStatusMatch && request.method === "GET") {
-        sendJson(response, 200, appContext.getRemoteLoginSessionStatus(remoteSessionStatusMatch[1]));
-        return;
-      }
-
-      const remoteSessionSnapshotMatch = url.pathname.match(/^\/auth\/session\/([^/]+)\/snapshot$/);
-      if (remoteSessionSnapshotMatch && request.method === "GET") {
-        sendBinary(
-          response,
-          200,
-          await appContext.getRemoteLoginSessionSnapshot(remoteSessionSnapshotMatch[1]),
-          "image/png"
-        );
-        return;
-      }
-
-      const remoteSessionActionMatch = url.pathname.match(/^\/auth\/session\/([^/]+)\/action$/);
-      if (remoteSessionActionMatch && request.method === "POST") {
+      if (url.pathname === "/api/local-auth-agent/heartbeat" && request.method === "POST") {
         const payload = await readJsonBody(request);
         sendJson(
           response,
           200,
-          await appContext.dispatchRemoteLoginSessionAction(
-            remoteSessionActionMatch[1],
-            payload.action,
-            payload
+          await appContext.heartbeatLocalAuthAgent(payload.token, payload.agent ?? {})
+        );
+        return;
+      }
+
+      if (url.pathname === "/api/local-auth-agent/claim" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(
+          response,
+          200,
+          await appContext.claimLocalAuthAgentTask(payload.token, payload.agent ?? {})
+        );
+        return;
+      }
+
+      const localAuthTaskCompleteMatch = url.pathname.match(/^\/api\/local-auth-agent\/tasks\/([^/]+)\/complete$/);
+      if (localAuthTaskCompleteMatch && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(
+          response,
+          200,
+          await appContext.completeLocalAuthAgentTask(
+            payload.token,
+            localAuthTaskCompleteMatch[1],
+            payload.storageState
+          )
+        );
+        return;
+      }
+
+      const localAuthTaskFailMatch = url.pathname.match(/^\/api\/local-auth-agent\/tasks\/([^/]+)\/fail$/);
+      if (localAuthTaskFailMatch && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(
+          response,
+          200,
+          await appContext.failLocalAuthAgentTask(
+            payload.token,
+            localAuthTaskFailMatch[1],
+            payload.error
           )
         );
         return;

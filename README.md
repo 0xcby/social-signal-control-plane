@@ -102,6 +102,56 @@ npm run auth:xiaohongshu
 - 浏览器登录态默认保存在 `data/browser/*.storage-state.json`
 - 这些文件已经加入 `.gitignore`
 
+## 本地登录代理
+
+服务器侧的远程扫码登录已经移除。现在推荐的登录方式是：
+
+1. 服务器负责创建登录任务
+2. 你本机运行 `local auth agent`
+3. agent 在你的电脑上自动打开真实浏览器完成登录
+4. 登录成功后，agent 自动把 `storage-state` 上传回服务器
+
+这样做的原因很直接：
+
+- 抖音、小红书、公众号这类站点对机房 IP、无头浏览器、远程截图工作台的风控更重
+- 网页本身不能直接执行你电脑上的本地脚本，这是浏览器安全模型决定的
+- 用本地 agent 领取任务，成功率更高，也不需要你手动上传登录态文件
+
+### 服务端启用
+
+服务器环境变量需要设置：
+
+```bash
+NEWS_LOCAL_AUTH_TOKEN=your-random-token
+```
+
+### 本机启动 agent
+
+```bash
+npm run auth:agent -- --server https://your-domain.example --token your-random-token
+```
+
+当前仓库里对应脚本是：
+
+- [scripts/local-auth-agent.js](scripts/local-auth-agent.js)
+- [scripts/lib/run-platform-login.js](scripts/lib/run-platform-login.js)
+
+### 使用流程
+
+1. 先在你自己的电脑上启动 `local auth agent`
+2. 打开项目页面的“平台登录”
+3. 点击目标平台“开始登录”
+4. 本地 agent 会自动领取任务并打开浏览器
+5. 登录成功后，登录态自动写回服务器
+
+### 任务自动释放
+
+如果你点击了“开始登录”，但本地 agent 没有在短时间内领取任务，任务会自动失效并释放。当前默认释放窗口是 `20 秒`。这意味着：
+
+- 如果本地 agent 没启动，不会把按钮永久卡死
+- 等待约 `20 秒` 后，你可以再次点击重新创建任务
+- 页面 Dashboard 里也会直接提示 agent 是否在线
+
 ## 配置说明
 
 主配置文件位于 [config/default.config.js](config/default.config.js)。

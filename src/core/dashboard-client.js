@@ -26,6 +26,7 @@ const state = {
   messages: [],
   settings: { platforms: [], channels: [] },
   authStatuses: [],
+  localAuthAgent: { enabled: false, online: false, pendingTasks: 0 },
   discoveredSessions: [],
   notificationEnabled: window.localStorage.getItem("news:browserNotificationEnabled") === "true",
   editingTarget: undefined,
@@ -580,6 +581,13 @@ function renderDashboardAlerts() {
   if (invalidAuth.length > 0) {
     alerts.push({ tone: "danger", title: "登录态需要处理", status: `${invalidAuth.length} 项`, detail: invalidAuth.map((item) => `${getPlatformDefinition(item.platformId)?.name || item.platformId}：${item.status}`).join("；") });
   }
+  if (!state.localAuthAgent.enabled) {
+    alerts.push({ tone: "info", title: "本地登录代理未启用", status: "手动模式", detail: "当前服务器未配置本地登录代理令牌，登录需要手动同步 storage-state 文件。" });
+  } else if (!state.localAuthAgent.online) {
+    alerts.push({ tone: "danger", title: "本地登录代理离线", status: "等待连接", detail: "页面无法直接调用你电脑上的脚本。请先在本机启动 local auth agent，再点击“开始登录”。" });
+  } else if (state.localAuthAgent.pendingTasks > 0) {
+    alerts.push({ tone: "info", title: "本地登录代理在线", status: `${state.localAuthAgent.pendingTasks} 个任务`, detail: "本机 agent 已连接；点击“开始登录”后会由 agent 自动领取并打开本地浏览器。" });
+  }
   const targetCount = state.settings.platforms.reduce((sum, platform) => sum + platform.targets.length, 0);
   if (targetCount === 0) {
     alerts.push({ tone: "danger", title: "暂无监控目标", status: "空配置", detail: "请先到“监控用户”页面添加需要监控的用户。" });
@@ -691,7 +699,6 @@ function renderAuthStatuses() {
   const nonDangerStates = new Set([
     "已保存登录态",
     "登录态校验中",
-    "登录中",
     "无需登录"
   ]);
 
@@ -700,7 +707,7 @@ function renderAuthStatuses() {
       .map((entry) => {
         const danger = !nonDangerStates.has(entry.status);
         const actions = entry.requiresLogin
-          ? `<button type="button" class="btn auth-login" data-platform-id="${escapeHtml(entry.platformId)}">开始登录</button>${entry.viewerPath ? `<a class="btn link" href="${escapeHtml(entry.viewerPath)}" target="_blank" rel="noreferrer">打开远程工作台</a>` : ""}${entry.loginUrl ? `<a class="btn link" href="${escapeHtml(entry.loginUrl)}" target="_blank" rel="noreferrer">打开平台登录页</a>` : ""}`
+          ? `<button type="button" class="btn auth-login" data-platform-id="${escapeHtml(entry.platformId)}">开始登录</button>${entry.loginUrl ? `<a class="btn link" href="${escapeHtml(entry.loginUrl)}" target="_blank" rel="noreferrer">打开平台登录页</a>` : ""}`
           : '<span class="muted">当前无需额外登录</span>';
 
         return `<article class="alert ${danger ? "danger" : ""}"><div class="alert-title"><span>${escapeHtml(getPlatformDefinition(entry.platformId)?.name || entry.platformId)}</span><span class="status${danger ? " danger" : ""}">${escapeHtml(entry.status)}</span></div><p class="muted">${escapeHtml(entry.detail || "")}</p><div class="mini-actions">${actions}</div></article>`;
@@ -714,10 +721,10 @@ function renderAuthStatuses() {
           method: "POST",
           body: JSON.stringify({ platformId: button.getAttribute("data-platform-id") })
         });
-        if (result.viewerPath) {
-          window.open(result.viewerPath, "_blank", "noopener,noreferrer");
+        if (result.mode === "external" && result.loginUrl) {
+          window.open(result.loginUrl, "_blank", "noopener,noreferrer");
         }
-        showToast(result.message || "远程登录工作台已启动。");
+        showToast(result.message || "已打开平台登录页。");
         await refreshAuthStatuses();
         renderAuthPanels();
       } catch (error) {
@@ -907,6 +914,7 @@ async function refreshSettings() {
   const previousChannelType = elements.channelType.value;
   state.settings = { platforms: payload.platforms || [], channels: payload.channels || [] };
   state.authStatuses = payload.authStatuses || [];
+  state.localAuthAgent = payload.localAuthAgent || { enabled: false, online: false, pendingTasks: 0 };
   state.discoveredSessions = payload.discoveredSessions || [];
   renderChannelTypeOptions();
   elements.monitorPlatform.innerHTML = state.settings.platforms.map((platform) => `<option value="${escapeHtml(platform.id)}">${escapeHtml(platform.name)}</option>`).join("");
@@ -928,6 +936,7 @@ async function refreshSettings() {
 async function refreshAuthStatuses() {
   const payload = await requestJson("/auth/status");
   state.authStatuses = payload.authStatuses || [];
+  state.localAuthAgent = payload.localAuthAgent || state.localAuthAgent;
 }
 
 async function refreshMessages() {

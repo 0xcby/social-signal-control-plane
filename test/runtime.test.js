@@ -661,9 +661,11 @@ test("wecom bot channel builds markdown payload from webhook key", async () => {
   assert.match(calls[0].url, /qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=abc123xyz789/);
   const payload = JSON.parse(calls[0].options.body);
   assert.equal(payload.msgtype, "markdown");
-  assert.match(payload.markdown.content, /微博 \/ 人民日报/);
-  assert.match(payload.markdown.content, /发布时间：北京时间 2026-03-17 20:00:00/);
-  assert.match(payload.markdown.content, /打开原文/);
+  assert.equal(payload.markdown.content.includes("**\u6807\u9898**\uff1a\u6700\u65b0\u6d88\u606f\u6807\u9898"), true);
+  assert.equal(payload.markdown.content.includes("**\u5185\u5bb9**\uff1a\u8fd9\u91cc\u662f\u6700\u65b0\u6d88\u606f\u5185\u5bb9"), true);
+  assert.equal(payload.markdown.content.includes("**\u65f6\u95f4**\uff1a\u5317\u4eac\u65f6\u95f4 2026-03-17 20:00:00"), true);
+  assert.equal(payload.markdown.content.includes("**\u53d1\u5e03\u6e20\u9053/\u53d1\u5e03\u8005**\uff1a\u5fae\u535a / \u4eba\u6c11\u65e5\u62a5"), true);
+  assert.equal(payload.markdown.content.includes("**\u7f51\u5740**\uff1ahttps://example.com/post/1"), true);
 });
 
 test("wecom bot channel accepts a full webhook url pasted into the key field", async () => {
@@ -826,9 +828,11 @@ test("wecom smart bot channel sends proactive messages to multiple chats and clo
     ["zhangsan", "chat-group-1"]
   );
   assert.equal(sent[0].body.msgtype, "markdown");
-  assert.match(sent[0].body.markdown.content, /微博 \/ 人民日报/);
-  assert.match(sent[0].body.markdown.content, /发布时间：北京时间 2026-03-18 17:30:00/);
-  assert.match(sent[0].body.markdown.content, /打开原文/);
+  assert.equal(sent[0].body.markdown.content.includes("**\u6807\u9898**\uff1a\u6700\u65b0\u6d88\u606f\u6807\u9898"), true);
+  assert.equal(sent[0].body.markdown.content.includes("**\u5185\u5bb9**\uff1a\u8fd9\u91cc\u662f\u6700\u65b0\u6d88\u606f\u5185\u5bb9"), true);
+  assert.equal(sent[0].body.markdown.content.includes("**\u65f6\u95f4**\uff1a\u5317\u4eac\u65f6\u95f4 2026-03-18 17:30:00"), true);
+  assert.equal(sent[0].body.markdown.content.includes("**\u53d1\u5e03\u6e20\u9053/\u53d1\u5e03\u8005**\uff1a\u5fae\u535a / \u4eba\u6c11\u65e5\u62a5"), true);
+  assert.equal(sent[0].body.markdown.content.includes("**\u7f51\u5740**\uff1ahttps://example.com/post/1"), true);
   assert.equal(discovered.length, 2);
   assert.equal(discovered[0].sessionType, "single");
   assert.equal(discovered[0].sessionId, "lisi");
@@ -1167,12 +1171,46 @@ test("auth manager marks expired stored login state as invalid", async () => {
   }
 });
 
-test("auth manager creates a remote login session and exposes viewer path", async () => {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "news-hub-auth-remote-"));
+test("auth manager returns external login url after remote login removal", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "news-hub-auth-login-"));
 
   try {
     const manager = new AuthManager({ cwd, logger: createSilentLogger() });
-    manager._runRemoteLoginSession = async () => {};
+
+    const result = await manager.startLogin("douyin", {
+      platforms: {
+        douyin: {
+          source: {
+            storageStatePath: "data/browser/douyin.storage-state.json"
+          }
+        }
+      }
+    });
+
+    assert.equal(result.started, false);
+    assert.equal(result.mode, "external");
+    assert.equal(result.loginUrl, "https://creator.douyin.com/");
+    assert.match(result.message, /远程登录工作台已移除/);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("auth manager creates local agent login task when agent is online", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "news-hub-auth-agent-"));
+
+  try {
+    const manager = new AuthManager({
+      cwd,
+      logger: createSilentLogger(),
+      localAgentToken: "test-token"
+    });
+
+    await manager.heartbeatLocalAgent("test-token", {
+      hostname: "desktop",
+      version: "1.0.0",
+      platform: "win32"
+    });
 
     const result = await manager.startLogin("douyin", {
       platforms: {
@@ -1185,15 +1223,116 @@ test("auth manager creates a remote login session and exposes viewer path", asyn
     });
 
     assert.equal(result.started, true);
-    assert.match(result.viewerPath, /^\/auth\/session\//);
+    assert.equal(result.mode, "local-agent");
+    assert.ok(result.taskId);
 
-    const sessionId = result.viewerPath.split("/").pop();
-    const status = manager.getRemoteSessionStatus(sessionId);
-    const html = manager.renderRemoteSessionView(sessionId);
+    const claim = await manager.claimLocalAgentTask("test-token", { hostname: "desktop" });
 
-    assert.equal(status.ok, true);
-    assert.equal(status.status, "登录进行中");
-    assert.match(html, /远程登录/);
+    assert.equal(claim.task.platformId, "douyin");
+    assert.equal(claim.task.id, result.taskId);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("auth manager writes uploaded storage state from local auth agent", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "news-hub-auth-agent-state-"));
+
+  try {
+    const manager = new AuthManager({
+      cwd,
+      logger: createSilentLogger(),
+      localAgentToken: "test-token"
+    });
+
+    await manager.heartbeatLocalAgent("test-token", {
+      hostname: "desktop",
+      version: "1.0.0",
+      platform: "win32"
+    });
+
+    const start = await manager.startLogin("weibo", {
+      platforms: {
+        weibo: {
+          source: {
+            storageStatePath: "data/browser/weibo.storage-state.json"
+          }
+        }
+      }
+    });
+
+    const claim = await manager.claimLocalAgentTask("test-token", { hostname: "desktop" });
+
+    assert.equal(claim.task.id, start.taskId);
+
+    await manager.completeLocalAgentTask("test-token", start.taskId, {
+      cookies: [{ name: "SUB", value: "value", domain: ".weibo.com", path: "/" }],
+      origins: []
+    });
+
+    const filePath = resolvePlatformStorageStatePath(
+      "weibo",
+      {
+        platforms: {
+          weibo: {
+            source: {
+              storageStatePath: "data/browser/weibo.storage-state.json"
+            }
+          }
+        }
+      },
+      cwd
+    );
+    const saved = JSON.parse(await fs.readFile(filePath, "utf8"));
+
+    assert.equal(saved.cookies[0].name, "SUB");
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("auth manager releases unclaimed local agent task and allows retry", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "news-hub-auth-agent-retry-"));
+
+  try {
+    const manager = new AuthManager({
+      cwd,
+      logger: createSilentLogger(),
+      localAgentToken: "test-token",
+      localAgentClaimTimeoutMs: 5
+    });
+
+    await manager.heartbeatLocalAgent("test-token", {
+      hostname: "desktop",
+      version: "1.0.0",
+      platform: "win32"
+    });
+
+    const first = await manager.startLogin("xiaohongshu", {
+      platforms: {
+        xiaohongshu: {
+          source: {
+            storageStatePath: "data/browser/xiaohongshu.storage-state.json"
+          }
+        }
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const second = await manager.startLogin("xiaohongshu", {
+      platforms: {
+        xiaohongshu: {
+          source: {
+            storageStatePath: "data/browser/xiaohongshu.storage-state.json"
+          }
+        }
+      }
+    });
+
+    assert.equal(first.started, true);
+    assert.equal(second.started, true);
+    assert.notEqual(first.taskId, second.taskId);
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
